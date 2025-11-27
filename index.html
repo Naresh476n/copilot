@@ -8,7 +8,7 @@
   </head>
   <body>
     <div class="box">
-      <form id="loginForm">
+      <form id="loginForm" autocomplete="off">
         <div class="title">
           <h1>Login</h1>
         </div>
@@ -21,7 +21,7 @@
           <label for="password" class="label-color">Password</label>
           <div class="password-container">
             <input id="password" name="password" type="password" placeholder="Enter Password" required/>
-            <button type="button" id="togglePassword">👁</button>
+            <button type="button" id="togglePassword" aria-label="Toggle password">👁</button>
           </div>
           <br/>
 
@@ -32,6 +32,7 @@
     </div>
 
     <script>
+      // Password toggle
       const togglePassword = document.getElementById("togglePassword");
       const passwordField = document.getElementById("password");
       togglePassword.addEventListener("click", () => {
@@ -40,6 +41,7 @@
         togglePassword.textContent = type === "password" ? "👁" : "👁️‍🗨️";
       });
 
+      // Demo users (front-end only; not secure for production)
       const validUsers = [
         { gmail: "naresh@gmail.com", password: "12345678" },
         { gmail: "sanjai@gmail.com", password: "12345678" },
@@ -48,12 +50,13 @@
         { gmail: "shathi@gmail.com", password: "12345678" },
       ];
 
+      // Form submit
       const loginForm = document.getElementById("loginForm");
       const errorMsg = document.getElementById("errorMsg");
 
       loginForm.addEventListener("submit", function (e) {
         e.preventDefault();
-        const email = document.getElementById("gmail").value.trim();
+        const email = document.getElementById("gmail").value.trim().toLowerCase();
         const password = document.getElementById("password").value.trim();
         const userFound = validUsers.find(u => u.gmail === email && u.password === password);
 

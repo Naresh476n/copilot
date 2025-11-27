@@ -24,7 +24,6 @@ body {
 .box {
   position: relative;
   width: 370px;
-  height: 470px;
   background: #1c1c1c;
   border-radius: 50px 5px;
   overflow: hidden;
@@ -55,8 +54,7 @@ body {
 }
 
 form {
-  position: absolute;
-  inset: 2px;
+  position: relative;
   background: #28292d;
   border-radius: 50px 5px;
   padding: 30px 40px;
@@ -141,5 +139,5 @@ form {
 }
 
 @media (max-width: 430px) {
-  .box { width: 90%; height: auto; }
+  .box { width: 90%; }
 }
