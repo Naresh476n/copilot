@@ -13,10 +13,8 @@
 //  CONFIG: Supabase
 // ==================================================================
 const SUPABASE_URL = "https://hhhvjviyzevftksqsbqe.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhoaHZqdml5emV2ZnRrc3FzYnFlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyMzczNzEsImV4cCI6MjA3OTgxMzM3MX0.NnGI7H9nrUcPUUgW_UCD4AieOBcOHIrdHoVRp3fFL-8";
+const SUPABASE_KEY = "YOUR_SUPABASE_KEY";   // replace with your key
 const DEVICE_ID = "esp32-local";
-
-// Supabase client
 const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ==================================================================
@@ -43,13 +41,13 @@ const autoOffTimers = {};
 const debounce = { 1: 0, 2: 0, 3: 0, 4: 0 };
 
 // ==================================================================
-//  RELAY CONTROL (UI + command to Supabase) with debouncing
+//  RELAY CONTROL (UI + Supabase command)
 // ==================================================================
 for (let i = 1; i <= 4; i++) {
   document.getElementById(`relay${i}`).addEventListener("change", async (e) => {
     const now = Date.now();
-    if (now - debounce[i] < 250) { // debounce rapid toggles
-      e.target.checked = relayStates[i]; // revert checkbox to previous state
+    if (now - debounce[i] < 250) {
+      e.target.checked = relayStates[i];
       return;
     }
     debounce[i] = now;
@@ -140,10 +138,9 @@ setInterval(() => {
 }, 2000);
 
 // ==================================================================
-//  LIVE MONITORING: real-time subscription + initial fetch
+//  LIVE MONITORING
 // ==================================================================
 function updateDashboardRow(d) {
-  // Update numeric telemetry
   for (let i = 1; i <= 4; i++) {
     const v = d[`v${i}`] ?? 0;
     const c = d[`c${i}`] ?? 0;
@@ -155,7 +152,6 @@ function updateDashboardRow(d) {
     document.getElementById(`p${i}`).textContent = `${Number(p).toFixed(2)}W`;
     document.getElementById(`e${i}`).textContent = `${Number(e).toFixed(3)}Wh`;
 
-    // Show status from UI state to avoid false ON due to sensor noise
     document.getElementById(`s${i}`).textContent = relayStates[i] ? "ON" : "OFF";
   }
   document.getElementById("tv").textContent = `${Number(d.total_voltage ?? 0).toFixed(2)}V`;
@@ -196,6 +192,12 @@ function subscribeRealtimeData() {
 
 fetchLatestRow();
 subscribeRealtimeData();
+
+// ==================================================================
+//  CHARTS + PDF REPORT (unchanged from your version)
+// ==================================================================
+// ... keep your chart.js and PDF logic here ...
+
 
 // ==================================================================
 //  CHARTS: aggregate real data from Supabase
@@ -369,6 +371,8 @@ document.getElementById("downloadPdf").addEventListener("click", async () => {
   pdf.save("Monthly_Report_Wh.pdf");
 });
 
+
+
 // ==================================================================
 //  NOTIFICATIONS + LOGOUT
 // ==================================================================
@@ -387,3 +391,26 @@ function logout() {
   sessionStorage.removeItem("userEmail");
   window.location.href = "index.html";
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
