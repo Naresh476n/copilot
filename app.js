@@ -1,29 +1,15 @@
 // ==================================================================
-//  SUPABASE CONFIG
+//  CONFIG: Supabase
 // ==================================================================
 const SUPABASE_URL = "https://hhhvjviyzevftksqsbqe.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhoaHZqdml5emV2ZnRrc3FzYnFlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQyMzczNzEsImV4cCI6MjA3OTgxMzM3MX0.NnGI7H9nrUcPUUgW_UCD4AieOBcOHIrdHoVRp3fFL-8";
-const SUPABASE_ANON_KEY = SUPABASE_KEY;  // for clarity
-const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const DEVICE_ID = "esp32-local";
+
+// Supabase client
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ==================================================================
-//  GUARD: Require login session
-// ==================================================================
-(function ensureSession() {
-  const email = sessionStorage.getItem("userEmail");
-  if (!email) {
-    window.location.href = "index.html";
-  }
-})();
-
-// Logout
-function logout() {
-  sessionStorage.clear();
-  window.location.href = "index.html";
-}
-
-// ==================================================================
-//  DATE & TIME DISPLAY
+//  DATE & TIME
 // ==================================================================
 function updateDateTime() {
   document.getElementById("dateTime").textContent = new Date().toLocaleString();
@@ -31,213 +17,307 @@ function updateDateTime() {
 setInterval(updateDateTime, 1000);
 updateDateTime();
 
+// Optional IP display
+fetch("https://api.ipify.org?format=json")
+  .then(r => r.json())
+  .then(j => { document.getElementById("ip").textContent = j.ip; })
+  .catch(() => {});
 
 // ==================================================================
-//  LIVE DATA FETCH FROM SUPABASE TABLE: 'live_readings'
+//  GLOBAL STATE
 // ==================================================================
-async function fetchLiveData() {
-  const { data, error } = await supabaseClient
-    .from("live_readings")           // must match your table name
-    .select("*")
-    .order("id", { ascending: false })
-    .limit(1);
+const relayStates = { 1: false, 2: false, 3: false, 4: false };
+const usageTimers = { 1: 0, 2: 0, 3: 0, 4: 0 };
+const usageLimits = { 1: 12, 2: 12, 3: 12, 4: 12 };
+const autoOffTimers = {};
 
-  if (error || !data || data.length === 0) return;
-
-  const row = data[0];  // latest reading (ESP32 inserts continuously)
-
-  // Individual Loads
-  updateTile(1, row.v1, row.c1, row.p1, row.e1, row.s1);
-  updateTile(2, row.v2, row.c2, row.p2, row.e2, row.s2);
-  updateTile(3, row.v3, row.c3, row.p3, row.e3, row.s3);
-  updateTile(4, row.v4, row.c4, row.p4, row.e4, row.s4);
-
-  // Total Usage
-  document.getElementById("tv").textContent = row.total_v + "V";
-  document.getElementById("tc").textContent = row.total_c + "A";
-  document.getElementById("tp").textContent = row.total_p + "W";
-  document.getElementById("te").textContent = row.total_e + "Wh";
-
-  limitCheck(row);  // Check if limit crossed → notification
+// ==================================================================
+//  RELAY CONTROL (UI + command to Supabase)
+// ==================================================================
+for (let i = 1; i <= 4; i++) {
+  document.getElementById(`relay${i}`).addEventListener("change", (e) =>
+    toggleRelay(i, e.target.checked)
+  );
 }
 
-// Helper to update DOM tiles
-function updateTile(id, v, c, p, e, s) {
-  document.getElementById(`v${id}`).textContent = v + "V";
-  document.getElementById(`c${id}`).textContent = c + "A";
-  document.getElementById(`p${id}`).textContent = p + "W";
-  document.getElementById(`e${id}`).textContent = e + "Wh";
-  document.getElementById(`s${id}`).textContent = s === 1 ? "ON" : "OFF";
+async function sendCommandToSupabase(relay, state) {
+  const { error } = await supabase
+    .from("esp32_commands")
+    .insert({ device_id: DEVICE_ID, relay, state });
+  if (error) addNotification(`Command error: ${error.message}`);
 }
 
-setInterval(fetchLiveData, 4000);  // fetch live data every 4 seconds
-fetchLiveData();
-
-
-// ==================================================================
-//  REMOTE CONTROL (Relay Control via Supabase Table: 'commands')
-// ==================================================================
-const relayCheckboxes = [
-  document.getElementById("relay1"),
-  document.getElementById("relay2"),
-  document.getElementById("relay3"),
-  document.getElementById("relay4")
-];
-
-relayCheckboxes.forEach((checkbox, index) => {
-  checkbox.addEventListener("change", () => {
-    updateRelay(index + 1, checkbox.checked ? 1 : 0);
-  });
-});
-
-async function updateRelay(loadNum, state) {
-  await supabaseClient.from("commands").insert([
-    { load: loadNum, relay_state: state } // ESP32 reads this table → switch relays
-  ]);
+function toggleRelay(id, state) {
+  relayStates[id] = state;
+  document.getElementById(`s${id}`).textContent = state ? "ON" : "OFF";
+  addNotification(`Load ${id} turned ${state ? "ON" : "OFF"}`);
+  sendCommandToSupabase(id, state);
 }
 
-
 // ==================================================================
-//  TIMER AUTO-OFF  (Insert into 'commands' table)
+//  AUTO-OFF TIMER
 // ==================================================================
-let timerInterval;
-
-document.querySelectorAll(".preset").forEach(btn => {
+document.querySelectorAll(".preset").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.getElementById("customMin").value = btn.dataset.min;
   });
 });
 
-document.getElementById("applyTimer").addEventListener("click", async () => {
-  const min = parseInt(document.getElementById("customMin").value);
+document.getElementById("applyTimer").addEventListener("click", () => {
   const load = document.getElementById("loadSelect").value;
+  const mins = parseInt(document.getElementById("customMin").value);
+  if (!mins || mins <= 0) return alert("Enter valid minutes");
 
-  if (!min || min < 1) return alert("Enter valid time");
+  if (autoOffTimers[load]) clearTimeout(autoOffTimers[load]);
+  autoOffTimers[load] = setTimeout(() => {
+    document.getElementById(`relay${load}`).checked = false;
+    toggleRelay(load, false);
+    addNotification(`Auto-OFF: Load ${load} OFF after ${mins} min`);
+  }, mins * 60 * 1000);
 
-  await supabaseClient.from("commands").insert([
-    { load: load, timer: min }
-  ]);
-
-  alert(`⏳ Auto OFF set for Load ${load} after ${min} mins`);
+  addNotification(`Timer set for Load ${load}: ${mins} min`);
 });
 
-
 // ==================================================================
-//  LIMIT CHECK  (Usage Limit per 24 hours)
+//  DAILY LIMIT LOGIC
 // ==================================================================
-function limitCheck(row) {
-  const limits = [
-    parseFloat(document.getElementById("limit1").value),
-    parseFloat(document.getElementById("limit2").value),
-    parseFloat(document.getElementById("limit3").value),
-    parseFloat(document.getElementById("limit4").value),
-  ];
-
+document.getElementById("saveLimits").addEventListener("click", () => {
   for (let i = 1; i <= 4; i++) {
-    const usedHours = row[`e${i}`] / row[`p${i}`]; // Wh ÷ W ≈ hours
-    if (usedHours > limits[i - 1]) {
-      addNotification(`⚠ Load ${i} crossed limit: ${usedHours.toFixed(2)}hr`);
+    usageLimits[i] = parseFloat(document.getElementById(`limit${i}`).value);
+  }
+  addNotification("Usage limits updated.");
+});
+
+setInterval(() => {
+  for (let i = 1; i <= 4; i++) {
+    if (relayStates[i]) {
+      usageTimers[i] += 2;
+      const hoursUsed = usageTimers[i] / 3600;
+      if (hoursUsed >= usageLimits[i]) {
+        document.getElementById(`relay${i}`).checked = false;
+        toggleRelay(i, false);
+        addNotification(`Limit reached: Load ${i} OFF after ${usageLimits[i]} hrs`);
+      }
     }
   }
+}, 2000);
+
+// ==================================================================
+//  LIVE MONITORING: real-time subscription + initial fetch
+// ==================================================================
+function updateDashboardRow(d) {
+  for (let i = 1; i <= 4; i++) {
+    const v = d[`v${i}`] ?? 0;
+    const c = d[`c${i}`] ?? 0;
+    const p = d[`p${i}`] ?? 0;
+    const e = d[`e${i}`] ?? 0;
+
+    document.getElementById(`v${i}`).textContent = `${v}V`;
+    document.getElementById(`c${i}`).textContent = `${c}A`;
+    document.getElementById(`p${i}`).textContent = `${p}W`;
+    document.getElementById(`e${i}`).textContent = `${e}Wh`;
+    document.getElementById(`s${i}`).textContent = c > 0 ? "ON" : "OFF";
+  }
+  document.getElementById("tv").textContent = `${d.total_voltage ?? 0}V`;
+  document.getElementById("tc").textContent = `${d.total_current ?? 0}A`;
+  document.getElementById("tp").textContent = `${d.total_power ?? 0}W`;
+  document.getElementById("te").textContent = `${d.total_energy ?? 0}Wh`;
 }
 
-document.getElementById("saveLimits").addEventListener("click", () => {
-  addNotification("✔ Limits updated successfully");
-});
-
-
-// ==================================================================
-//  NOTIFICATION SYSTEM
-// ==================================================================
-function addNotification(msg) {
-  const ul = document.getElementById("notifs");
-  const li = document.createElement("li");
-  li.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-  ul.prepend(li);
+async function fetchLatestRow() {
+  const { data, error } = await supabase
+    .from("esp32_data")
+    .select("*")
+    .eq("device_id", DEVICE_ID)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (!error && data && data.length) {
+    updateDashboardRow(data[0]);
+  }
 }
 
-document.getElementById("clearNotifs").addEventListener("click", () => {
-  document.getElementById("notifs").innerHTML = "<li>No notifications yet.</li>";
+function subscribeRealtimeData() {
+  supabase
+    .channel("esp32-data-channel")
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "esp32_data", filter: `device_id=eq.${DEVICE_ID}` },
+      payload => {
+        updateDashboardRow(payload.new);
+        addNotification("New sensor data received in real-time.");
+      }
+    )
+    .subscribe();
+}
+
+fetchLatestRow();
+subscribeRealtimeData();
+
+// Optional: subscribe to commands to reflect confirmed relay state (if ESP32 echoes somewhere)
+// supabase
+//   .channel("esp32-cmd-channel")
+//   .on("postgres_changes", { event: "INSERT", schema: "public", table: "esp32_commands", filter: `device_id=eq.${DEVICE_ID}` },
+//     payload => addNotification(`Command queued: Relay ${payload.new.relay} -> ${payload.new.state ? "ON" : "OFF"}`))
+//   .subscribe();
+
+// ==================================================================
+//  CHARTS: aggregate real data from Supabase
+// ==================================================================
+const filterSelect = document.getElementById("filterSelect");
+const filterInputs = {
+  day: document.getElementById("singleDay"),
+  month: document.getElementById("singleMonth"),
+  dayRange: document.getElementById("dayRangeInputs"),
+  monthRange: document.getElementById("monthRangeInputs"),
+};
+filterSelect.addEventListener("change", () => {
+  Object.values(filterInputs).forEach((el) => el.classList.add("hidden"));
+  const selected = filterSelect.value;
+  if (filterInputs[selected]) filterInputs[selected].classList.remove("hidden");
 });
 
-document.getElementById("refreshNotifs").addEventListener("click", fetchLiveData);
+let chart;
+function calculateCost(totalWh) {
+  if (totalWh <= 50) return totalWh * 4;
+  else if (totalWh <= 100) return totalWh * 6;
+  else return totalWh * 8;
+}
 
+async function fetchRows(limit = 1000) {
+  const { data, error } = await supabase
+    .from("esp32_data")
+    .select("created_at,total_energy,e1,e2,e3,e4")
+    .eq("device_id", DEVICE_ID)
+    .order("created_at", { ascending: true })
+    .limit(limit);
+  return error ? [] : data;
+}
 
-// ==================================================================
-//  CHARTS – Daily / Monthly / Range  (Table name: 'history')
-// ==================================================================
-let chartInstance;
+document.getElementById("loadCharts").addEventListener("click", async () => {
+  const ctx = document.getElementById("chart").getContext("2d");
+  if (chart) chart.destroy();
 
-async function loadChart() {
-  const filter = document.getElementById("filterSelect").value;
-  let query = supabaseClient.from("history");
-  let title = "";
+  const selected = filterSelect.value;
+  const rows = await fetchRows(2000);
 
-  if (filter === "day") {
-    const day = document.getElementById("singleDay").value;
-    query = query.eq("day", day);
-    title = `Day: ${day}`;
+  let chartLabels = [];
+  let series = [];
 
-  } else if (filter === "month") {
-    const mon = document.getElementById("singleMonth").value;
-    query = query.eq("month", mon);
-    title = `Month: ${mon}`;
-
-  } else if (filter === "dayRange") {
-    const from = document.getElementById("fromDay").value;
-    const to = document.getElementById("toDay").value;
-    query = query.gte("day", from).lte("day", to);
-    title = `${from} → ${to}`;
-
-  } else if (filter === "monthRange") {
-    const from = document.getElementById("fromMonth").value;
-    const to = document.getElementById("toMonth").value;
-    query = query.gte("month", from).lte("month", to);
-    title = `${from} → ${to}`;
+  if (selected === "day") {
+    const day = document.getElementById("singleDay").value || new Date().toISOString().slice(0,10);
+    const filtered = rows.filter(r => r.created_at.startsWith(day));
+    chartLabels = filtered.map(r => new Date(r.created_at).toLocaleTimeString());
+    series = filtered.map(r => r.total_energy ?? 0);
+  } else if (selected === "month") {
+    const month = document.getElementById("singleMonth").value || new Date().toISOString().slice(0,7);
+    const filtered = rows.filter(r => r.created_at.startsWith(month));
+    chartLabels = filtered.map(r => new Date(r.created_at).toLocaleDateString());
+    series = filtered.map(r => r.total_energy ?? 0);
+  } else if (selected === "dayRange") {
+    const from = new Date(document.getElementById("fromDay").value);
+    const to = new Date(document.getElementById("toDay").value);
+    const grouped = {};
+    rows.forEach(r => {
+      const d = new Date(r.created_at);
+      if (isFinite(from) && isFinite(to) && d >= from && d <= to) {
+        const key = d.toISOString().slice(0,10);
+        grouped[key] = (grouped[key] || 0) + (r.total_energy ?? 0);
+      }
+    });
+    chartLabels = Object.keys(grouped);
+    series = Object.values(grouped);
+  } else if (selected === "monthRange") {
+    const from = new Date(document.getElementById("fromMonth").value + "-01");
+    const to = new Date(document.getElementById("toMonth").value + "-01");
+    const grouped = {};
+    rows.forEach(r => {
+      const d = new Date(r.created_at);
+      if (isFinite(from) && isFinite(to) && d >= from && d <= to) {
+        const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+        grouped[key] = (grouped[key] || 0) + (r.total_energy ?? 0);
+      }
+    });
+    chartLabels = Object.keys(grouped);
+    series = Object.values(grouped);
   }
 
-  const { data } = await query.select("*");
-  renderChart(data, title);
-}
-
-function renderChart(data, title) {
-  const labels = data.map(r => r.day || r.month);
-  const values = data.map(r => r.total_energy);
-
-  const ctx = document.getElementById("chart").getContext("2d");
-  if (chartInstance) chartInstance.destroy();
-
-  chartInstance = new Chart(ctx, {
+  chart = new Chart(ctx, {
     type: document.getElementById("chartType").value,
     data: {
-      labels: labels,
+      labels: chartLabels,
       datasets: [{
-        label: title,
-        data: values,
-        borderWidth: 2
+        label: "Total Energy (Wh)",
+        data: series,
+        borderColor: "#3b82f6",
+        backgroundColor: "rgba(59,130,246,0.4)"
       }]
+    },
+    options: {
+      responsive: true,
+      plugins: { title: { display: true, text: "Energy Consumption", color: "#e2e8f0" } },
+      scales: { y: { beginAtZero: true } }
     }
   });
 
-  document.getElementById("chartResults").textContent = `Data Points: ${data.length}`;
-}
-
-document.getElementById("loadCharts").addEventListener("click", loadChart);
-
-
-// ==================================================================
-//  PDF DOWNLOAD
-// ==================================================================
-document.getElementById("downloadPdf").addEventListener("click", () => {
-  const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF();
-  pdf.text("Power Consumption Report", 10, 10);
-  pdf.text("Generated at: " + new Date().toLocaleString(), 10, 20);
-  pdf.save("report.pdf");
+  const totalWh = series.reduce((a,b)=>a+(parseFloat(b)||0),0);
+  const cost = calculateCost(totalWh).toFixed(2);
+  document.getElementById("chartResults").textContent =
+    `Total Energy: ${totalWh.toFixed(2)} Wh · Cost: ₹${cost}`;
 });
 
+// ==================================================================
+//  PDF REPORT: monthly aggregation
+// ==================================================================
+document.getElementById("downloadPdf").addEventListener("click", async () => {
+  const selected = filterSelect.value;
+  if (selected !== "month" && selected !== "monthRange") {
+    alert("PDF report available only for monthly or month-range data.");
+    return;
+  }
+
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF();
+  const rows = await fetchRows(5000);
+
+  const grouped = {};
+  rows.forEach(r => {
+    const key = r.created_at.slice(0,7); // YYYY-MM
+    grouped[key] = (grouped[key] || 0) + (r.total_energy ?? 0);
+  });
+
+  const months = Object.entries(grouped);
+  if (months.length === 0) {
+    alert("No data available to generate PDF.");
+    return;
+  }
+
+  months.forEach(([month, totalWh], idx) => {
+    if (idx > 0) pdf.addPage();
+    const [y, m] = month.split("-");
+    const label = `${new Date(y, m-1).toLocaleString("default", { month: "long" })} ${y}`;
+    pdf.setFontSize(14);
+    pdf.text(`Power Consumption Report - ${label}`, 14, 20);
+    pdf.setFontSize(10);
+    pdf.text("------------------------------------------", 14, 25);
+    pdf.text(`Total Energy: ${totalWh.toFixed(2)} Wh`, 14, 35);
+    pdf.text(`Cost: ₹${calculateCost(totalWh).toFixed(2)}`, 14, 45);
+  });
+
+  pdf.save("Monthly_Report_Wh.pdf");
+});
 
 // ==================================================================
-//  END OF FILE
+//  NOTIFICATIONS + LOGOUT
 // ==================================================================
-console.log("App.js Loaded Successfully!");
+document.getElementById("refreshNotifs").addEventListener("click", () => addNotification("New data updated."));
+document.getElementById("clearNotifs").addEventListener("click", () => {
+  document.getElementById("notifs").innerHTML = "<li>No notifications yet.</li>";
+});
+function addNotification(msg) {
+  const list = document.getElementById("notifs");
+  if (list.children[0].textContent === "No notifications yet.") list.innerHTML = "";
+  const li = document.createElement("li");
+  li.textContent = `${new Date().toLocaleTimeString()} - ${msg}`;
+  list.prepend(li);
+}
+function logout() { window.location.href = "index.html"; }
